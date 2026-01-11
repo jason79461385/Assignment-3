@@ -13,3 +13,4 @@ tenacity
 termcolor
 pypdf
 pymupdf
+python-dotenv

@@ -1,8 +1,11 @@
 import os
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
+from dotenv import load_dotenv
 
-
+load_dotenv(override=True)
+if not os.getenv("GOOGLE_API_KEY"):
+    print("⚠️ Warning: GOOGLE_API_KEY not found in environment variables. Please check your .env file.")
 
 DATA_FOLDER = "data"
 DB_FOLDER = "chroma_db"
@@ -26,9 +29,11 @@ def get_embeddings():
 # 3. LLM Model (All Students should use Gemini 2.0-flash)
 # ==============================================================================
 def get_llm(temperature=0):
+    api_key = os.getenv("GOOGLE_API_KEY")
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
         temperature=temperature,
+        google_api_key=api_key,
         convert_system_message_to_human=True,
         max_output_tokens=2048
     )

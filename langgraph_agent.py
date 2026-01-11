@@ -38,12 +38,19 @@ def initialize_vector_dbs():
             vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
         elif os.path.exists(file_path):
             print(f"🔨 Building index for {key} (This happens once)...")
-            loader = PyMuPDFLoader(file_path) # <--- 改用 PyMuPDF
+            loader = PyMuPDFLoader(file_path)
             docs = loader.load()
-            
+
+            # TODO (Optional): Clean the data to remove noise (e.g., "\n")
+            # You can write a loop here to replace newlines with spaces
+            # or remove headers/footers.
+            # Example (Dirty data cleanup):
+            # for doc in docs:
+            #     doc.page_content = doc.page_content.replace("\n", " ")
+
             splitter = RecursiveCharacterTextSplitter(
-                chunk_size=2000,     
-                chunk_overlap=400,    
+                chunk_size=2000,     # <--- can modify
+                chunk_overlap=400,   # <--- can modify 
                 separators=["\n\n", "\n", " ", ""] 
             )
             splits = splitter.split_documents(docs)
@@ -69,7 +76,7 @@ class AgentState(TypedDict):
 
 
 @retry_logic
-def retrieve_node(state: AgentState): # You can modify this function, write the prompt LLM can decide which retriever to use
+def retrieve_node(state: AgentState):
     print(colored("--- 🔍 RETRIEVING ---", "blue"))
     question = state["question"]
     llm = get_llm()
@@ -107,7 +114,7 @@ def retrieve_node(state: AgentState): # You can modify this function, write the 
     return {"documents": docs_content, "search_count": state["search_count"] + 1}
 
 @retry_logic
-def grade_documents_node(state: AgentState): # You can modify this function, write the prompt LLM can tell whether the retrieved documents are relevant to the question
+def grade_documents_node(state: AgentState): 
     print(colored("--- ⚖️ GRADING ---", "yellow"))
     question = state["question"]
     documents = state["documents"]
@@ -135,12 +142,12 @@ def grade_documents_node(state: AgentState): # You can modify this function, wri
     return {"needs_rewrite": grade}
 
 @retry_logic
-def generate_node(state: AgentState): # You can modify this function, write the prompt LLM can generate the final answer based on the retrieved documents
+def generate_node(state: AgentState):
     print(colored("--- ✍️ GENERATING ---", "green"))
     question = state["question"]
     documents = state["documents"]
     llm = get_llm() 
-
+    # You can modify prompt, write the prompt LLM can generate the final answer based on the retrieved documents
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a financial analyst. Use the provided context to answer the question. \n"
                    "If the context doesn't contain the answer, say you don't know. \n"
@@ -153,12 +160,12 @@ def generate_node(state: AgentState): # You can modify this function, write the 
     return {"generation": response.content}
 
 @retry_logic
-def rewrite_node(state: AgentState): # You can modify this function, write the prompt LLM can rewrite the question to be more specific
+def rewrite_node(state: AgentState): 
     print(colored("--- 🔄 REWRITING QUERY ---", "red"))
     question = state["question"]
     llm = get_llm()
-    
-    msg = [
+    # You can modify msg, write the prompt LLM can rewrite the question to be more specific
+    msg = [ 
         HumanMessage(content=f"The previous search for '{question}' yielded irrelevant results. \n"
                              f"Please rephrase this question to be more specific or use better keywords for a financial search engine. \n"
                              f"Output ONLY the new question text.")
@@ -215,7 +222,7 @@ def run_legacy_agent(question: str):
     create_retriever_tool = None
     hub = None
     try:
-        from langchain.agents import AgentExecutor
+        from langchain.agents import AgentExecutor, create_react_agent
     except ImportError:
         try:
             from langchain.agents.agent import AgentExecutor
@@ -227,6 +234,9 @@ def run_legacy_agent(question: str):
         pass
     try:
         from langchain.tools.retriever import create_retriever_tool
+        from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+        from langchain_core.prompts import PromptTemplate
+        from langchain.tools.render import render_text_description
     except ImportError:
         try:
             from langchain.agents.agent_toolkits import create_retriever_tool
@@ -235,15 +245,8 @@ def run_legacy_agent(question: str):
     try:
         from langchain import hub
     except ImportError:
-        try:
-            import langchain_hub as hub
-        except ImportError:
-            pass
+        pass
 
-    if not all([AgentExecutor, create_tool_calling_agent, create_retriever_tool, hub]):
-        error_msg = (f"Debug Info: Executor={bool(AgentExecutor)}, ToolAgent={bool(create_tool_calling_agent)}, Hub={bool(hub)}\n")
-        print(colored(error_msg, "red"))
-        return "SYSTEM_ERROR: Legacy Import Failed"
     tools = []
     if "apple" in RETRIEVERS:
         tools.append(create_retriever_tool(
@@ -263,11 +266,48 @@ def run_legacy_agent(question: str):
 
     llm = get_llm()
 
-    prompt = hub.pull("hwchase17/openai-tools-agent")
 
-    agent = create_tool_calling_agent(llm, tools, prompt)
+    # ============================================================
+    # TODO: Define the ReAct Prompt Template
+    # ============================================================
+    # Your task is to write the prompt that tells the LLM how to reason and act and must let LLM answer in English.
+    # The ReAct framework REQUIRES the following structure in your string:
+    #
+    # 1. Description of available tools: {tools}
+    # 2. Instruction on the output format:
+    #    - Thought: ...
+    #    - Action: ... (must be one of [{tool_names}])
+    #    - Action Input: ...
+    #    - Observation: ...
+    # 3. The input question: {input}
+    # 4. The history of thoughts/actions: {agent_scratchpad}
+    #
+    # Write your template string below:
 
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+    template = """
+    
+    """
+    prompt = PromptTemplate.from_template(template)
+    prompt = prompt.partial(
+            tools=render_text_description(tools),
+            tool_names=", ".join([t.name for t in tools])
+    )
+
+    def formatting_error_handler(error) -> str:
+        error_str = str(error)
+        if "Final Answer:" in error_str:
+            return error_str.split("Final Answer:")[-1].strip()
+        return "Agent failed to parse correctly, but here is the raw thought: " + error_str[:100]
+    
+    agent = create_react_agent(llm, tools, prompt)
+
+    agent_executor = AgentExecutor(
+            agent=agent, 
+            tools=tools, 
+            verbose=False,
+            handle_parsing_errors=formatting_error_handler,
+            max_iterations=5
+    )
 
     try:
         result = agent_executor.invoke({"input": question})

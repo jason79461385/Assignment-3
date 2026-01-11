@@ -10,3 +10,4 @@ cache/
 *.log
 *.csv
 chroma_db/
+.env
